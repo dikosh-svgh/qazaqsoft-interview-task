@@ -1,73 +1,146 @@
 <!DOCTYPE html>
 <html lang="ru">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>Quiz — Образовательная платформа</title>
-    <link rel="stylesheet" href="./styles.css" />
-  </head>
-  <body>
-    <main class="container" aria-live="polite">
-      <header class="header">
-        <h1 id="quiz-title">Загрузка…</h1>
-        <div class="meta">
-          <div id="progress" aria-label="Прогресс теста">Вопрос — / —</div>
-          <div id="timer" aria-label="Оставшееся время">—:—</div>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Интерактивный тест для образовательной платформы" />
+  <title>Quiz</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+  <div id="resume-overlay" hidden aria-modal="true" role="dialog" aria-labelledby="resume-title">
+    <div class="resume-card">
+      <h3 id="resume-title">Продолжить тест?</h3>
+      <p>Найден сохранённый прогресс. Хотите продолжить с того места, где остановились?</p>
+      <div class="resume-actions">
+        <button id="btn-resume" class="btn btn-primary">Продолжить</button>
+        <button id="btn-fresh"  class="btn btn-ghost">Начать заново</button>
+      </div>
+    </div>
+  </div>
+
+
+  <div id="timeout-toast" role="alert" aria-live="assertive" hidden>
+    Время вышло! Тест завершается…
+  </div>
+
+
+  <div id="screen-loading" role="status" aria-label="Загрузка теста">
+    <div class="spinner" aria-hidden="true"></div>
+    <p>Загрузка теста…</p>
+  </div>
+
+  <div id="screen-quiz" class="hidden" role="main">
+    <div class="quiz-wrap">
+
+      <header class="quiz-header">
+        <div class="quiz-header-left">
+          <h1 id="quiz-title" aria-live="polite">Тест</h1>
+          <div class="progress-label" id="progress-text" aria-live="polite">
+            Вопрос 1 из N
+          </div>
+        </div>
+        <div class="timer-wrap">
+          <div
+            id="timer"
+            role="timer"
+            aria-label="Оставшееся время"
+            aria-live="off"
+          >00:00</div>
+          <div class="timer-label">осталось</div>
         </div>
       </header>
 
-      <section
-        id="question-section"
-        class="card"
-        aria-labelledby="question-text"
+      <div
+        class="progress-track"
+        role="progressbar"
+        aria-valuemin="0"
+        aria-valuemax="100"
+        aria-valuenow="0"
+        aria-label="Прогресс теста"
       >
-        <div id="question-text" class="question-text">Загрузка вопроса…</div>
-        <form
-          id="options-form"
-          class="options"
-          role="radiogroup"
-          aria-label="Варианты ответа"
-        ></form>
-      </section>
+        <div class="progress-fill" id="progress-bar-fill"></div>
+      </div>
 
-      <nav class="actions">
-        <button id="btn-prev" class="btn" type="button" aria-label="Назад">
-          Назад
-        </button>
-        <button
-          id="btn-next"
-          class="btn btn-primary"
-          type="button"
-          aria-label="Далее"
-          disabled
-        >
-          Далее
-        </button>
-        <button
-          id="btn-finish"
-          class="btn btn-accent"
-          type="button"
-          aria-label="Завершить"
-          disabled
-        >
-          Завершить
-        </button>
+      <article class="question-card" aria-label="Вопрос">
+        <p id="question-text" tabindex="-1"></p>
+        <ul
+          id="options-list"
+          role="list"
+          aria-label="Варианты ответа"
+        ></ul>
+      </article>
+
+      <nav class="nav-row" aria-label="Навигация по тесту">
+        <button id="btn-prev"   class="btn btn-ghost"   aria-label="Предыдущий вопрос">← Назад</button>
+        <div style="flex:1"></div>
+        <button id="btn-next"   class="btn btn-primary" aria-label="Следующий вопрос">Далее →</button>
+        <button id="btn-finish" class="btn btn-primary" aria-label="Завершить тест" hidden>Завершить ✓</button>
       </nav>
 
-      <section id="result-section" class="card hidden" aria-live="polite">
-        <h2>Результат</h2>
-        <p id="result-summary">—</p>
-        <div class="actions">
-          <button id="btn-review" class="btn" type="button">
-            Посмотреть ответы
-          </button>
-          <button id="btn-restart" class="btn btn-primary" type="button">
-            Пройти заново
-          </button>
-        </div>
-      </section>
-    </main>
+   
 
-    <script src="./app.js" type="module"></script>
-  </body>
+    </div>
+  </div>
+
+  <div id="screen-result" class="hidden" role="main">
+    <div class="quiz-wrap" style="align-items:center">
+      <div class="result-card" aria-label="Результаты теста">
+
+        <p class="result-title" id="result-title">Основы JavaScript</p>
+
+        <div class="score-ring-wrap" aria-hidden="true">
+          <svg class="score-ring" width="120" height="120" viewBox="0 0 120 120">
+            <circle class="ring-bg" cx="60" cy="60" r="54"/>
+            <circle id="score-ring-fill" cx="60" cy="60" r="54"/>
+            <text class="ring-text-group" x="60" y="60" text-anchor="middle">
+              <tspan class="ring-pct" id="result-pct" dy=".4em">0%</tspan>
+            </text>
+          </svg>
+        </div>
+
+        <div id="result-status" class="result-status" role="status" aria-live="polite">
+          …
+        </div>
+
+        <div class="result-score-row">
+          <div class="result-stat">
+            <span class="result-stat-value" id="result-score">0 / 0</span>
+            <span class="result-stat-label">правильных</span>
+          </div>
+          <div class="result-stat">
+            <span class="result-stat-value" id="result-pct-2" aria-hidden="true"></span>
+            <span class="result-stat-label">результат</span>
+          </div>
+        </div>
+
+        <p id="result-threshold"></p>
+
+        <div class="result-actions">
+          <button id="btn-review"  class="btn btn-ghost">Посмотреть ответы</button>
+          <button id="btn-restart" class="btn btn-danger">Пройти заново</button>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <div id="screen-review" class="hidden" role="main">
+    <div class="quiz-wrap">
+
+      <header class="review-header">
+        <button id="btn-back-to-result" class="btn btn-ghost" aria-label="Назад к результатам">
+          ^ Результат ^
+        </button>
+        <h2>Разбор ответов</h2>
+      </header>
+
+      <ul id="review-list" aria-label="Разбор ответов" role="list"></ul>
+
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
 </html>
