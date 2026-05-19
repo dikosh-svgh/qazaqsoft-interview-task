@@ -1,325 +1,860 @@
-// ========== Константы и ключи хранилища ==========
-const STORAGE_KEYS = {
-  STATE: "quiz.state.v1",
-};
-const DATA_URL = "./data/questions.json";
-
-// ========== Модели ==========
-/**
- * @typedef {{ id: string; text: string; options: string[]; correctIndex: number; topic?: string }} QuestionDTO
- * @typedef {{ title: string; timeLimitSec: number; passThreshold: number; questions: QuestionDTO[] }} QuizDTO
- */
+'use strict';
 
 class Question {
-  /** @param {QuestionDTO} dto */
-  constructor(dto) {
-    this.id = dto.id;
-    this.text = dto.text;
-    this.options = dto.options;
-    this.correctIndex = dto.correctIndex;
-    this.topic = dto.topic ?? null;
+  constructor(raw, shuffleOptions = false) {
+    this.id = raw.id;
+    this.text = raw.text;
+    this.correctIndex = raw.correctIndex;
+
+    if (shuffleOptions) {
+      const indexed = raw.options.map((opt, i) => ({ opt, i }));
+      this._shuffle(indexed);
+      this.options = indexed.map(x => x.opt);
+      this.correctIndex = indexed.findIndex(x => x.i === raw.correctIndex);
+    } else {
+      this.options = [...raw.options];
+    }
+  }
+
+  isCorrect(chosenIndex) {
+    return chosenIndex === this.correctIndex;
+  }
+
+  _shuffle(arr) {
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [arr[i], arr[j]] = [arr[j], arr[i]];
+    }
   }
 }
 
-// ========== Сервисы ==========
-class StorageService {
-  static saveState(state) {
-    // TODO: сериализовать state и сохранить в localStorage
-    // Пример: localStorage.setItem(STORAGE_KEYS.STATE, JSON.stringify(state));
-    throw new Error("Not implemented: StorageService.saveState");
-  }
-
-  static loadState() {
-    // TODO: прочитать и распарсить состояние, вернуть объект или null
-    throw new Error("Not implemented: StorageService.loadState");
-  }
-
-  static clear() {
-    // TODO: очистить сохранённое состояние
-    throw new Error("Not implemented: StorageService.clear");
-  }
-}
-
-// ========== Движок теста ==========
 class QuizEngine {
-  /** @param {QuizDTO} quiz */
-  constructor(quiz) {
-    this.title = quiz.title;
-    this.timeLimitSec = quiz.timeLimitSec;
-    this.passThreshold = quiz.passThreshold;
-    this.questions = quiz.questions.map((q) => new Question(q));
+  static STORAGE_KEY = 'quiz_progress';
+
+  constructor(data, opts = {}) {
+    this.title = data.title;
+    this.timeLimitSec = data.timeLimitSec;
+    this.passThreshold = data.passThreshold ?? 0.7;
+
+    let rawQuestions = [...data.questions];
+
+    if (opts.shuffleQuestions) {
+      this._shuffle(rawQuestions);
+    }
+
+    this.questions = rawQuestions.map(
+      q => new Question(q, opts.shuffleOptions)
+    );
+
+    this.total = this.questions.length;
 
     this.currentIndex = 0;
-    /** @type {Record<string, number|undefined>} */
-    this.answers = {}; // questionId -> selectedIndex
-    this.remainingSec = quiz.timeLimitSec;
-    this.isFinished = false;
+    this.answers = new Array(this.total).fill(null);
+    this.timeRemaining = this.timeLimitSec;
+    this.finished = false;
+
+    this._questionStartTimes = [];
+    this._timePerQuestion = new Array(this.total).fill(0);
+
+    this._timerInterval = null;
+    this._onTick = null;
+    this._onTimeout = null;
   }
 
-  get length() {
-    return this.questions.length;
+  save() {
+    const snapshot = {
+      currentIndex: this.currentIndex,
+      answers: this.answers,
+      timeRemaining: this.timeRemaining,
+      timePerQuestion: this._timePerQuestion
+    };
+
+    localStorage.setItem(
+      QuizEngine.STORAGE_KEY,
+      JSON.stringify(snapshot)
+    );
   }
-  get currentQuestion() {
+
+  static hasSaved() {
+    return !!localStorage.getItem(QuizEngine.STORAGE_KEY);
+  }
+
+  static clearSaved() {
+    localStorage.removeItem(QuizEngine.STORAGE_KEY);
+  }
+
+  restore() {
+    const raw = localStorage.getItem(QuizEngine.STORAGE_KEY);
+
+    if (!raw) {
+      return false;
+    }
+
+    try {
+      const snap = JSON.parse(raw);
+
+      this.currentIndex = snap.currentIndex ?? 0;
+      this.answers =
+        snap.answers ?? new Array(this.total).fill(null);
+
+      this.timeRemaining =
+        snap.timeRemaining ?? this.timeLimitSec;
+
+      this._timePerQuestion =
+        snap.timePerQuestion ??
+        new Array(this.total).fill(0);
+
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  startTimer(onTick, onTimeout) {
+    this._onTick = onTick;
+    this._onTimeout = onTimeout;
+
+    this._recordQuestionStart();
+
+    this._timerInterval = setInterval(
+      () => this._tick(),
+      1000
+    );
+  }
+
+  _tick() {
+    this.timeRemaining = Math.max(
+      0,
+      this.timeRemaining - 1
+    );
+
+    this.save();
+
+    this._onTick?.(this.timeRemaining);
+
+    if (this.timeRemaining === 0) {
+      this.stopTimer();
+      this._onTimeout?.();
+    }
+  }
+
+  stopTimer() {
+    clearInterval(this._timerInterval);
+    this._timerInterval = null;
+  }
+
+  get current() {
     return this.questions[this.currentIndex];
   }
 
-  /** @param {number} index */
-  goTo(index) {
-    // TODO: валидировать границы и сменить текущий индекс
-    throw new Error("Not implemented: QuizEngine.goTo");
+  get isFirst() {
+    return this.currentIndex === 0;
   }
 
-  next() {
-    // TODO: перейти к следующему вопросу, если возможно
-    throw new Error("Not implemented: QuizEngine.next");
+  get isLast() {
+    return this.currentIndex === this.total - 1;
   }
 
-  prev() {
-    // TODO: перейти к предыдущему вопросу, если возможно
-    throw new Error("Not implemented: QuizEngine.prev");
+  selectAnswer(optionIndex) {
+    this.answers[this.currentIndex] = optionIndex;
+    this.save();
   }
 
-  /** @param {number} optionIndex */
-  select(optionIndex) {
-    // TODO: сохранить выбор пользователя для текущего вопроса
-    throw new Error("Not implemented: QuizEngine.select");
+  goNext() {
+    this._recordTimeSpent();
+
+    if (!this.isLast) {
+      this.currentIndex++;
+      this._recordQuestionStart();
+      this.save();
+    }
   }
 
-  getSelectedIndex() {
-    // TODO: вернуть выбранный индекс для текущего вопроса (или undefined)
-    throw new Error("Not implemented: QuizEngine.getSelectedIndex");
-  }
+  goPrev() {
+    this._recordTimeSpent();
 
-  tick() {
-    // TODO: декремент таймера; если 0 — завершить тест
-    throw new Error("Not implemented: QuizEngine.tick");
+    if (!this.isFirst) {
+      this.currentIndex--;
+      this._recordQuestionStart();
+      this.save();
+    }
   }
 
   finish() {
-    // TODO: зафиксировать завершение и вернуть сводку результата
-    // return { correct: number, total: number, percent: number, passed: boolean }
-    throw new Error("Not implemented: QuizEngine.finish");
+    this._recordTimeSpent();
+    this.stopTimer();
+    this.finished = true;
+
+    QuizEngine.clearSaved();
+
+    return this.getResults();
   }
 
-  /** Восстановление/выгрузка состояния для localStorage */
-  toState() {
-    // TODO: вернуть сериализуемый снимок состояния
-    throw new Error("Not implemented: QuizEngine.toState");
+  getResults() {
+    let correct = 0;
+
+    const details = this.questions.map((q, i) => {
+      const chosen = this.answers[i];
+      const isCorrect = q.isCorrect(chosen);
+
+      if (isCorrect) {
+        correct++;
+      }
+
+      return {
+        question: q.text,
+        options: q.options,
+        correctIndex: q.correctIndex,
+        chosenIndex: chosen,
+        isCorrect,
+        timeSpent: this._timePerQuestion[i]
+      };
+    });
+
+    const pct = correct / this.total;
+    const passed = pct >= this.passThreshold;
+
+    return {
+      correct,
+      total: this.total,
+      pct,
+      passed,
+      details,
+      threshold: this.passThreshold
+    };
   }
 
-  /** @param {any} state */
-  static fromState(quiz, state) {
-    // TODO: создать двигатель на базе сохранённого состояния
-    throw new Error("Not implemented: QuizEngine.fromState");
+  _recordQuestionStart() {
+    this._questionStartTimes[this.currentIndex] =
+      Date.now();
+  }
+
+  _recordTimeSpent() {
+    const start =
+      this._questionStartTimes[this.currentIndex];
+
+    if (start) {
+      this._timePerQuestion[this.currentIndex] +=
+        Math.round((Date.now() - start) / 1000);
+    }
+  }
+
+  _shuffle(arr) {
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+
+      [arr[i], arr[j]] = [arr[j], arr[i]];
+    }
   }
 }
 
-// ========== DOM-утилиты ==========
-const $ = (sel) => /** @type {HTMLElement} */ (document.querySelector(sel));
-const els = {
-  title: $("#quiz-title"),
-  progress: $("#progress"),
-  timer: $("#timer"),
-  qSection: $("#question-section"),
-  qText: $("#question-text"),
-  form: $("#options-form"),
-  btnPrev: $("#btn-prev"),
-  btnNext: $("#btn-next"),
-  btnFinish: $("#btn-finish"),
-  result: $("#result-section"),
-  resultSummary: $("#result-summary"),
-  btnReview: $("#btn-review"),
-  btnRestart: $("#btn-restart"),
-};
+class QuizUI {
+  constructor() {
+    this.engine = null;
 
-let engine = /** @type {QuizEngine|null} */ (null);
-let timerId = /** @type {number|undefined} */ (undefined);
-let reviewMode = false;
+    this.$loading =
+      document.getElementById('screen-loading');
 
-// ========== Инициализация ==========
-document.addEventListener("DOMContentLoaded", async () => {
-  const quiz = await loadQuiz();
-  els.title.textContent = quiz.title;
+    this.$quiz =
+      document.getElementById('screen-quiz');
 
-  const saved = StorageService.loadState?.(); // заглушка
-  if (saved) {
-    engine = QuizEngine.fromState(quiz, saved);
-  } else {
-    engine = new QuizEngine(quiz);
+    this.$result =
+      document.getElementById('screen-result');
+
+    this.$review =
+      document.getElementById('screen-review');
+
+    this.$quizTitle =
+      document.getElementById('quiz-title');
+
+    this.$progressText =
+      document.getElementById('progress-text');
+
+    this.$progressBar =
+      document.getElementById('progress-bar-fill');
+
+    this.$timer =
+      document.getElementById('timer');
+
+    this.$questionText =
+      document.getElementById('question-text');
+
+    this.$optionsList =
+      document.getElementById('options-list');
+
+    this.$btnPrev =
+      document.getElementById('btn-prev');
+
+    this.$btnNext =
+      document.getElementById('btn-next');
+
+    this.$btnFinish =
+      document.getElementById('btn-finish');
+
+    this.$resultTitle =
+      document.getElementById('result-title');
+
+    this.$resultStatus =
+      document.getElementById('result-status');
+
+    this.$resultScore =
+      document.getElementById('result-score');
+
+    this.$resultPct =
+      document.getElementById('result-pct');
+
+    this.$resultThreshold =
+      document.getElementById('result-threshold');
+
+    this.$btnReview =
+      document.getElementById('btn-review');
+
+    this.$btnRestart =
+      document.getElementById('btn-restart');
+
+    this.$reviewList =
+      document.getElementById('review-list');
+
+    this.$btnBackQuiz =
+      document.getElementById(
+        'btn-back-to-result'
+      );
+
+    this._resuming = false;
   }
 
-  bindEvents();
-  renderAll();
+  async init() {
+    const data = await this._loadData();
 
-  startTimer();
-});
+    this.engine = new QuizEngine(data, {
+      shuffleQuestions: false,
+      shuffleOptions: false
+    });
 
-async function loadQuiz() {
-  // Загружаем JSON с вопросами
-  const res = await fetch(DATA_URL);
-  /** @type {QuizDTO} */
-  const data = await res.json();
-  // Простейшая валидация формата (можно расширить)
-  if (!data?.questions?.length) {
-    throw new Error("Некорректные данные теста");
+    if (QuizEngine.hasSaved()) {
+      const resumed = await this._askResume();
+
+      if (resumed) {
+        this.engine.restore();
+        this._resuming = true;
+      } else {
+        QuizEngine.clearSaved();
+      }
+    }
+
+    this._bindEvents();
+    this._showQuiz();
   }
-  return data;
+
+  async _loadData() {
+    const resp = await fetch(
+      './data/questions.json'
+    );
+
+    if (!resp.ok) {
+      throw new Error(
+        'Не удалось загрузить вопросы'
+      );
+    }
+
+    return resp.json();
+  }
+
+  _askResume() {
+    return new Promise(resolve => {
+      const overlay =
+        document.getElementById(
+          'resume-overlay'
+        );
+
+      overlay.hidden = false;
+
+      overlay.querySelector(
+        '#btn-resume'
+      ).onclick = () => {
+        overlay.hidden = true;
+        resolve(true);
+      };
+
+      overlay.querySelector(
+        '#btn-fresh'
+      ).onclick = () => {
+        overlay.hidden = true;
+        resolve(false);
+      };
+    });
+  }
+
+  _bindEvents() {
+    this.$btnPrev.addEventListener(
+      'click',
+      () => this._prev()
+    );
+
+    this.$btnNext.addEventListener(
+      'click',
+      () => this._next()
+    );
+
+    this.$btnFinish.addEventListener(
+      'click',
+      () => this._finish()
+    );
+
+    this.$btnReview.addEventListener(
+      'click',
+      () => this._showReview()
+    );
+
+    this.$btnRestart.addEventListener(
+      'click',
+      () => this._restart()
+    );
+
+    this.$btnBackQuiz.addEventListener(
+      'click',
+      () => this._backToResult()
+    );
+
+    document.addEventListener(
+      'keydown',
+      e => this._handleKey(e)
+    );
+  }
+
+  _handleKey(e) {
+    if (
+      this.$quiz.classList.contains('hidden')
+    ) {
+      return;
+    }
+
+    if (
+      e.key === 'ArrowRight' ||
+      e.key === 'Enter'
+    ) {
+      if (!this.engine.isLast) {
+        this._next();
+      } else {
+        this._finish();
+      }
+    }
+
+    if (e.key === 'ArrowLeft') {
+      this._prev();
+    }
+
+    const num = parseInt(e.key);
+
+    if (
+      num >= 1 &&
+      num <=
+        this.engine.current.options.length
+    ) {
+      this._selectOption(num - 1);
+    }
+  }
+
+  _showScreen(name) {
+    ['loading', 'quiz', 'result', 'review']
+      .forEach(s => {
+        document
+          .getElementById(`screen-${s}`)
+          .classList.toggle(
+            'hidden',
+            s !== name
+          );
+      });
+  }
+
+  _showQuiz() {
+    const e = this.engine;
+
+    this.$quizTitle.textContent = e.title;
+
+    this._showScreen('quiz');
+
+    this._renderQuestion();
+
+    this._renderTimer(e.timeRemaining);
+
+    e.startTimer(
+      rem => this._renderTimer(rem),
+      () => {
+        this._showTimeout();
+        this._finish(true);
+      }
+    );
+  }
+
+  _showResult(results) {
+    this._showScreen('result');
+
+    const {
+      correct,
+      total,
+      pct,
+      passed
+    } = results;
+
+    this.$resultTitle.textContent =
+      this.engine.title;
+
+    this.$resultStatus.textContent =
+      passed
+        ? '✓ Тест пройден'
+        : '✗ Тест не пройден';
+
+    this.$resultStatus.className =
+      `result-status ${
+        passed ? 'passed' : 'failed'
+      }`;
+
+    this.$resultScore.textContent =
+      `${correct} / ${total}`;
+
+    this.$resultPct.textContent =
+      `${Math.round(pct * 100)}%`;
+
+    this.$resultThreshold.textContent =
+      `Порог: ${Math.round(
+        this.engine.passThreshold * 100
+      )}%`;
+
+    this._animateScore(pct);
+  }
+
+  _showReview() {
+    this._showScreen('review');
+
+    const results =
+      this.engine.getResults();
+
+    this.$reviewList.innerHTML = '';
+
+    results.details.forEach((d, i) => {
+      const item =
+        document.createElement('div');
+
+      item.className = `review-item ${
+        d.isCorrect
+          ? 'correct'
+          : 'incorrect'
+      }`;
+
+      const header =
+        document.createElement('div');
+
+      header.className =
+        'review-question';
+
+      header.innerHTML = `
+        <span class="review-num">
+          ${i + 1}
+        </span>
+        <span>${d.question}</span>
+      `;
+
+      const opts =
+        document.createElement('ul');
+
+      opts.className =
+        'review-options';
+
+      d.options.forEach((opt, oi) => {
+        const li =
+          document.createElement('li');
+
+        const isChosen =
+          oi === d.chosenIndex;
+
+        const isCorrect =
+          oi === d.correctIndex;
+
+        li.className = [
+          isCorrect
+            ? 'opt-correct'
+            : '',
+          isChosen && !isCorrect
+            ? 'opt-wrong'
+            : '',
+          isChosen
+            ? 'opt-chosen'
+            : ''
+        ]
+          .filter(Boolean)
+          .join(' ');
+
+        li.innerHTML = `
+          <span class="opt-marker">
+            ${
+              isCorrect
+                ? '✓'
+                : isChosen
+                ? '✗'
+                : '○'
+            }
+          </span>
+          <span>${opt}</span>
+        `;
+
+        opts.appendChild(li);
+      });
+
+      const timeNote =
+        document.createElement('div');
+
+      timeNote.className =
+        'review-time';
+
+      timeNote.textContent =
+        `Время: ${d.timeSpent}с`;
+
+      item.appendChild(header);
+      item.appendChild(opts);
+      item.appendChild(timeNote);
+
+      this.$reviewList.appendChild(item);
+    });
+  }
+
+  _backToResult() {
+    this._showScreen('result');
+  }
+
+  _renderQuestion() {
+    const e = this.engine;
+    const q = e.current;
+    const idx = e.currentIndex;
+
+    const progress =
+      ((idx + 1) / e.total) * 100;
+
+    this.$progressText.textContent =
+      `Вопрос ${idx + 1} из ${e.total}`;
+
+    this.$progressBar.style.width =
+      `${progress}%`;
+
+    this.$progressBar.setAttribute(
+      'aria-valuenow',
+      progress
+    );
+
+    this.$questionText.textContent =
+      q.text;
+
+    this.$questionText.setAttribute(
+      'aria-label',
+      `Вопрос ${idx + 1}: ${q.text}`
+    );
+
+    this.$optionsList.innerHTML = '';
+
+    q.options.forEach((opt, i) => {
+      const li =
+        document.createElement('li');
+
+      li.setAttribute(
+        'role',
+        'listitem'
+      );
+
+      const btn =
+        document.createElement('button');
+
+      btn.className = 'option-btn';
+
+      btn.textContent =
+        `${String.fromCharCode(
+          65 + i
+        )}. ${opt}`;
+
+      btn.setAttribute(
+        'aria-label',
+        `Вариант ${String.fromCharCode(
+          65 + i
+        )}: ${opt}`
+      );
+
+      if (e.answers[idx] === i) {
+        btn.classList.add('selected');
+      }
+
+      btn.addEventListener(
+        'click',
+        () => this._selectOption(i)
+      );
+
+      li.appendChild(btn);
+
+      this.$optionsList.appendChild(li);
+    });
+
+    this.$btnPrev.hidden =
+      e.isFirst;
+
+    this.$btnNext.hidden =
+      e.isLast;
+
+    this.$btnFinish.hidden =
+      !e.isLast;
+
+    const card =
+      this.$questionText.closest(
+        '.question-card'
+      );
+
+    card.classList.remove('slide-in');
+
+    void card.offsetWidth;
+
+    card.classList.add('slide-in');
+  }
+
+  _selectOption(index) {
+    this.engine.selectAnswer(index);
+
+    this.$optionsList
+      .querySelectorAll('.option-btn')
+      .forEach((btn, i) => {
+        btn.classList.toggle(
+          'selected',
+          i === index
+        );
+      });
+  }
+
+  _prev() {
+    this.engine.goPrev();
+    this._renderQuestion();
+  }
+
+  _next() {
+    this.engine.goNext();
+    this._renderQuestion();
+  }
+
+  _finish(auto = false) {
+    this.engine.stopTimer();
+
+    const results =
+      this.engine.finish();
+
+    if (!auto) {
+      this._showResult(results);
+    } else {
+      setTimeout(
+        () => this._showResult(results),
+        1500
+      );
+    }
+  }
+
+  _restart() {
+    QuizEngine.clearSaved();
+    location.reload();
+  }
+
+  _renderTimer(sec) {
+    const m = String(
+      Math.floor(sec / 60)
+    ).padStart(2, '0');
+
+    const s = String(
+      sec % 60
+    ).padStart(2, '0');
+
+    this.$timer.textContent =
+      `${m}:${s}`;
+
+    this.$timer.classList.remove(
+      'warning',
+      'danger'
+    );
+
+    if (sec <= 30) {
+      this.$timer.classList.add(
+        'danger'
+      );
+    } else if (sec <= 60) {
+      this.$timer.classList.add(
+        'warning'
+      );
+    }
+  }
+
+  _showTimeout() {
+    const toast =
+      document.getElementById(
+        'timeout-toast'
+      );
+
+    toast.hidden = false;
+
+    toast.classList.add('show');
+
+    setTimeout(() => {
+      toast.classList.remove('show');
+
+      setTimeout(() => {
+        toast.hidden = true;
+      }, 400);
+    }, 2000);
+  }
+
+  _animateScore(targetPct) {
+    const ring =
+      document.getElementById(
+        'score-ring-fill'
+      );
+
+    if (!ring) {
+      return;
+    }
+
+    const circumference =
+      2 * Math.PI * 54;
+
+    ring.style.strokeDasharray =
+      circumference;
+
+    ring.style.strokeDashoffset =
+      circumference;
+
+    requestAnimationFrame(() => {
+      ring.style.transition =
+        'stroke-dashoffset 1.2s cubic-bezier(.4,0,.2,1)';
+
+      ring.style.strokeDashoffset =
+        circumference *
+        (1 - targetPct);
+    });
+  }
 }
 
-// ========== Таймер ==========
-function startTimer() {
-  stopTimer();
-  timerId = window.setInterval(() => {
+document.addEventListener(
+  'DOMContentLoaded',
+  async () => {
+    const ui = new QuizUI();
+
     try {
-      engine.tick();
-      persist();
-      renderTimer();
-    } catch (e) {
-      // До реализации tick() попадём сюда — это нормально для шаблона.
-      stopTimer();
+      await ui.init();
+    } catch (err) {
+      console.error(err);
+
+      document.getElementById(
+        'screen-loading'
+      ).innerHTML = `
+        <div class="load-error">
+          <p> Ошибка загрузки данных</p>
+          <small>${err.message}</small>
+          <br>
+          <small>
+            Убедитесь, что файл запущен через локальный сервер
+          </small>
+        </div>
+      `;
     }
-  }, 1000);
-}
-function stopTimer() {
-  if (timerId) {
-    clearInterval(timerId);
-    timerId = undefined;
   }
-}
-
-// ========== События ==========
-function bindEvents() {
-  els.btnPrev.addEventListener("click", () => {
-    safeCall(() => engine.prev());
-    persist();
-    renderAll();
-  });
-
-  els.btnNext.addEventListener("click", () => {
-    safeCall(() => engine.next());
-    persist();
-    renderAll();
-  });
-
-  els.btnFinish.addEventListener("click", () => {
-    const summary = safeCall(() => engine.finish());
-    if (summary) {
-      stopTimer();
-      renderResult(summary);
-      persist();
-    }
-  });
-
-  els.btnReview.addEventListener("click", () => {
-    reviewMode = true;
-    renderAll();
-  });
-
-  els.btnRestart.addEventListener("click", () => {
-    StorageService.clear?.();
-    window.location.reload();
-  });
-
-  els.form.addEventListener("change", (e) => {
-    const target = /** @type {HTMLInputElement} */ (e.target);
-    if (target?.name === "option") {
-      const idx = Number(target.value);
-      safeCall(() => engine.select(idx));
-      persist();
-      renderNav();
-    }
-  });
-}
-
-function safeCall(fn) {
-  try {
-    return fn?.();
-  } catch {
-    /* noop в шаблоне */
-  }
-}
-
-// ========== Рендер ==========
-function renderAll() {
-  renderProgress();
-  renderTimer();
-  renderQuestion();
-  renderNav();
-}
-
-function renderProgress() {
-  els.progress.textContent = `Вопрос ${engine.currentIndex + 1} из ${
-    engine.length
-  }`;
-}
-
-function renderTimer() {
-  const sec = engine.remainingSec ?? 0;
-  const m = Math.floor(sec / 60)
-    .toString()
-    .padStart(2, "0");
-  const s = Math.floor(sec % 60)
-    .toString()
-    .padStart(2, "0");
-  els.timer.textContent = `${m}:${s}`;
-}
-
-function renderQuestion() {
-  const q = engine.currentQuestion;
-  els.qText.textContent = q.text;
-
-  els.form.innerHTML = "";
-  q.options.forEach((opt, i) => {
-    const id = `opt-${q.id}-${i}`;
-    const wrapper = document.createElement("label");
-    wrapper.className = "option";
-    if (reviewMode) {
-      const chosen = engine.answers[q.id];
-      if (i === q.correctIndex) wrapper.classList.add("correct");
-      if (chosen === i && i !== q.correctIndex)
-        wrapper.classList.add("incorrect");
-    }
-
-    const input = document.createElement("input");
-    input.type = "radio";
-    input.name = "option";
-    input.value = String(i);
-    input.id = id;
-    input.checked = engine.getSelectedIndex?.() === i;
-
-    const span = document.createElement("span");
-    span.textContent = opt;
-
-    wrapper.appendChild(input);
-    wrapper.appendChild(span);
-    els.form.appendChild(wrapper);
-  });
-}
-
-function renderNav() {
-  const hasSelection = Number.isInteger(engine.getSelectedIndex?.());
-  els.btnPrev.disabled = engine.currentIndex === 0;
-  els.btnNext.disabled = !(
-    engine.currentIndex < engine.length - 1 && hasSelection
-  );
-  els.btnFinish.disabled = !(
-    engine.currentIndex === engine.length - 1 && hasSelection
-  );
-}
-
-function renderResult(summary) {
-  els.result.classList.remove("hidden");
-  const pct = Math.round(summary.percent * 100);
-  const status = summary.passed ? "Пройден" : "Не пройден";
-  els.resultSummary.textContent = `${summary.correct} / ${summary.total} (${pct}%) — ${status}`;
-}
-
-// ========== Persist ==========
-function persist() {
-  try {
-    const snapshot = engine.toState?.();
-    if (snapshot) StorageService.saveState(snapshot);
-  } catch {
-    /* noop в шаблоне */
-  }
-}
+);
